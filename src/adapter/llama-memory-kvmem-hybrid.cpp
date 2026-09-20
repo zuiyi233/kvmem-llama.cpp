@@ -13,9 +13,16 @@ static bool use_gdn_replay(const llama_model & model, const llama_cparams & cp) 
     const int mode = llama_kvmem_get_params()->mtp_state;
     if (mode == 0) return false;
     const auto & h = model.hparams;
-    bool supported = model.arch == LLM_ARCH_QWEN35 && h.n_layer() == 64 && cp.n_seq_max == 1 &&
-        cp.n_rs_seq > 0 && cp.n_rs_seq <= 5 && cp.n_ubatch >= cp.n_rs_seq + 1 && cp.offload_kqv && h.ssm_d_inner == 6144 &&
-        h.ssm_d_state == 128 && h.ssm_n_group == 16 && h.ssm_dt_rank == 48 && h.ssm_d_conv == 4;
+    // GDN replay supports Qwen3.5-family hybrids (dense 27B / MoE 35B) with MTP 1-5,
+    // all recurrent layers on one CUDA GPU, single sequence.
+    const bool is_qwen35_family =
+        model.arch == LLM_ARCH_QWEN35 || model.arch == LLM_ARCH_QWEN35MOE;
+    const bool shape_ok =
+        (model.arch == LLM_ARCH_QWEN35 && h.n_layer() == 64 && h.ssm_d_inner == 6144 && h.ssm_dt_rank == 48) ||
+        (model.arch == LLM_ARCH_QWEN35MOE && h.n_layer() == 40 && h.ssm_d_inner == 4096 && h.ssm_dt_rank == 32);
+    bool supported = is_qwen35_family && shape_ok && cp.n_seq_max == 1 &&
+        cp.n_rs_seq > 0 && cp.n_rs_seq <= 5 && cp.n_ubatch >= cp.n_rs_seq + 1 && cp.offload_kqv &&
+        h.ssm_d_state == 128 && h.ssm_n_group == 16 && h.ssm_d_conv == 4;
     ggml_backend_dev_t device = nullptr;
     for (uint32_t il = 0; supported && il < h.n_layer(); ++il) {
         if (!h.is_recr(il)) continue;
@@ -24,7 +31,7 @@ static bool use_gdn_replay(const llama_model & model, const llama_cparams & cp) 
             std::strcmp(ggml_backend_reg_name(ggml_backend_dev_backend_reg(dev)), "CUDA") == 0 && (!device || device == dev);
         device = dev;
     }
-    if (!supported && mode == 2) throw std::runtime_error("GDN replay requires single-sequence CUDA Qwen 27B with MTP 1-5 and all recurrent layers on one GPU");
+    if (!supported && mode == 2) throw std::runtime_error("GDN replay requires single-sequence CUDA Qwen 3.5 dense/MoE with MTP 1-5 and all recurrent layers on one GPU");
     // Keep automatic selection on snapshots until the replay regression suite passes.
     return supported && mode == 2;
 }

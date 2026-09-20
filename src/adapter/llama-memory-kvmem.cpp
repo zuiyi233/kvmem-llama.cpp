@@ -74,9 +74,15 @@ void llama_memory_kvmem::set_recurrent(llama_memory_recurrent * recr) {
     for (size_t il = 0; il < recr->r_l.size(); ++il) {
         if (!recr->r_l[il]) continue;
         const auto & r = recr->replay_l[il];
+        const auto & hp = model_.hparams;
+        const int n_k_heads  = (int) hp.ssm_n_group;
+        const int n_v_heads  = (int) hp.ssm_dt_rank;
+        const int d_state    = (int) hp.ssm_d_state;
+        const int conv_ch    = (int) (hp.ssm_d_inner + 2*hp.ssm_n_group*hp.ssm_d_state);
         layers.push_back({static_cast<float *>(recr->s_l[il]->data), static_cast<float *>(recr->r_l[il]->data),
                 static_cast<float *>(r[0]->data), static_cast<float *>(r[1]->data), static_cast<float *>(r[2]->data),
-                static_cast<float *>(r[3]->data), static_cast<float *>(r[4]->data)});
+                static_cast<float *>(r[3]->data), static_cast<float *>(r[4]->data),
+                n_k_heads, n_v_heads, d_state, conv_ch});
         for (auto * t : r) records += ggml_nbytes(t);
         states += ggml_nbytes(recr->r_l[il]) + ggml_nbytes(recr->s_l[il]);
         buft = ggml_backend_buffer_get_type(recr->s_l[il]->buffer);
@@ -112,7 +118,10 @@ bool llama_memory_kvmem::gdn_replay_commit(llama_context * ctx, uint32_t n_keep)
     const int64_t started = ggml_time_us();
     const auto * layers = static_cast<const ggml_cuda_gdn_replay_layer *>(ggml_backend_buffer_get_base(replay.descriptors.get()));
     if (cudaSetDevice(replay.device) != cudaSuccess ||
-            !ggml_backend_cuda_gdn_fold(layers, replay.layers, n_keep, recr_->replay_capacity, replay.stream) ||
+            !ggml_backend_cuda_gdn_fold(layers, replay.layers, n_keep, recr_->replay_capacity,
+                    (int) model_.hparams.ssm_dt_rank,
+                    (int) (model_.hparams.ssm_d_inner + 2*model_.hparams.ssm_n_group*model_.hparams.ssm_d_state),
+                    replay.stream) ||
             cudaStreamSynchronize(replay.stream) != cudaSuccess) {
         recr_->replay_poisoned = true;
         recr_->replay_finish(0);
@@ -1525,15 +1534,51 @@ void llama_memory_kvmem::capture_on_new_graph() {
 
 bool llama_memory_kvmem::capture_can_reuse(uint32_t n_tokens, uint32_t n_pos,
                                            const llama_pos * pos) const {
+    // DEV-PROF: count reuse decisions; log reason class every 16 calls.
+    struct ReuseDbg {
+        uint32_t n_dec = 0, reuse_dec = 0, r_record_dec = 0, r_k_dec = 0, r_q_dec = 0;
+        uint32_t n_pre = 0, reuse_pre = 0, r_record_pre = 0, r_k_pre = 0, r_q_pre = 0;
+        ~ReuseDbg() {
+            if (n_dec || n_pre) fprintf(stderr,
+                "KVMEM_REUSE_DBG end decode: n=%u reuse=%u rej_record=%u rej_k=%u rej_q=%u | prefill: n=%u reuse=%u\n",
+                n_dec, reuse_dec, r_record_dec, r_k_dec, r_q_dec, n_pre, reuse_pre);
+        }
+    };
+    thread_local ReuseDbg dbg;
+    const bool is_dec = n_tokens <= 8;
+    if (is_dec) ++dbg.n_dec; else ++dbg.n_pre;
+    const bool rec_ok = graph_has_record_ == bool(recr_ && recr_->replay_recording);
+    const bool k_ok = !(want_decode_mean() && !graph_has_k_);
+    uint32_t &r_record = is_dec ? dbg.r_record_dec : dbg.r_record_pre;
+    uint32_t &r_k      = is_dec ? dbg.r_k_dec      : dbg.r_k_pre;
+    uint32_t &r_q      = is_dec ? dbg.r_q_dec      : dbg.r_q_pre;
+    uint32_t &r_reuse  = is_dec ? dbg.reuse_dec    : dbg.reuse_pre;
+    if (!rec_ok) {
+        ++r_record;
+    } else if (!k_ok) {
+        ++r_k;
+    } else {
+        // Post-pin query replay must not keep rebuilding just because the ubatch
+        // overlaps the query span — Q nodes are off after pin. T5 recapture
+        // (want_q_capture, including replay) still requires a Q graph.
+        const bool need_q = want_q_capture() &&
+                llama_kvmem_ubatch_needs_q_capture(n_tokens, n_pos, pos);
+        if (need_q != graph_has_q_) {
+            ++r_q;
+        } else {
+            ++r_reuse;
+        }
+    }
+    if ((is_dec ? dbg.n_dec : dbg.n_pre) % 32 == 0) {
+        fprintf(stderr,
+                "KVMEM_REUSE_DBG decode: n=%u reuse=%u rej_record=%u rej_k=%u rej_q=%u | prefill: n=%u reuse=%u\n",
+                dbg.n_dec, dbg.reuse_dec, dbg.r_record_dec, dbg.r_k_dec, dbg.r_q_dec,
+                dbg.n_pre, dbg.reuse_pre);
+    }
     if (graph_has_record_ != bool(recr_ && recr_->replay_recording)) return false;
-    // After pin, n=1 decode must not reuse a graph built without K capture
-    // (last prefill ubatch of 1 token, or query replay with capture off).
     if (want_decode_mean() && !graph_has_k_) {
         return false;
     }
-    // Post-pin query replay must not keep rebuilding just because the ubatch
-    // overlaps the query span — Q nodes are off after pin. T5 recapture
-    // (want_q_capture, including replay) still requires a Q graph.
     const bool need_q = want_q_capture() &&
             llama_kvmem_ubatch_needs_q_capture(n_tokens, n_pos, pos);
     return need_q == graph_has_q_;

@@ -105,7 +105,7 @@ static void check_replay(ggml_backend_t backend, int tokens, int rounds, bool fo
     ggml_backend_tensor_set(descriptor, &layer, 0, sizeof(layer));
     const auto original_key = get(k);
     const auto columns = get(conv_input);
-    require(ggml_backend_cuda_gdn_fold(nullptr, 0, 0, 0, nullptr), "zero Fold must not access descriptors");
+    require(ggml_backend_cuda_gdn_fold(nullptr, 0, 0, 0, 48, 10240, nullptr), "zero Fold must not access descriptors");
     for (int round = 0; round < rounds; ++round) {
         ggml_backend_tensor_set(k, original_key.data(), 0, ggml_nbytes(k));
         const auto initial = get(s);
@@ -125,7 +125,7 @@ static void check_replay(ggml_backend_t backend, int tokens, int rounds, bool fo
             std::fill(key.begin() + keep * 2048, key.end(), std::numeric_limits<float>::quiet_NaN());
             ggml_backend_tensor_set(k, key.data(), 0, ggml_nbytes(k));
             require(ggml_backend_cuda_gdn_fold(static_cast<const ggml_cuda_gdn_replay_layer *>(descriptor->data),
-                        1, keep, tokens, nullptr), "Fold launch failed");
+                        1, keep, tokens, 48, 10240, nullptr), "Fold launch failed");
             const auto actual = get(s);
             const float * expected = keep == 0 ? initial.data()
                 : snapshots.data() + output.size() + (tokens - keep) * initial.size();

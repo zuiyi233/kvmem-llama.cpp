@@ -455,7 +455,16 @@ kvmem_spec_gen_stats kvmem_spec_generate(
         if (fast_greedy) {
             ids = kvmem_spec_sample_fast_greedy(smpl.get(), ctx_tgt, vocab, draft);
         } else {
-            ids = common_sampler_sample_and_accept_n(smpl.get(), ctx_tgt, draft);
+            // Multi-output verify: fetch the whole outputs logits block once
+            // (one D2H + one sync) instead of per position.
+            // idxs == [0, 1, ..., draft.size()] maps to the verify batch's
+            // output positions (id_last then draft[i]) — same contract as the
+            // non-batched overload.
+            std::vector<int> idxs(draft.size() + 1);
+            for (size_t i = 0; i < idxs.size(); ++i) {
+                idxs[i] = (int) i;
+            }
+            ids = common_sampler_sample_and_accept_n_batched(smpl.get(), ctx_tgt, idxs, draft);
         }
         prof_smpl_us += ggml_time_us() - prof_s0;
         verify_us += ggml_time_us() - verify_start;

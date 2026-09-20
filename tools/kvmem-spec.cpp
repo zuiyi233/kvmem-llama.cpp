@@ -277,6 +277,10 @@ kvmem_spec_gen_stats kvmem_spec_generate(
     bool has_eos = false;
     int64_t verify_us = 0, fold_us = 0;
     uint64_t verify_calls = 0, committed_rows = 0;
+    // KVMEM_PROFILE=1: split verify_us into replay_begin / decode_tgt /
+    // spec_process (includes ctx_dft decode) / sample. Totals per request.
+    const bool prof = getenv("KVMEM_PROFILE") != nullptr;
+    int64_t prof_begin_us = 0, prof_tgt_us = 0, prof_proc_us = 0, prof_smpl_us = 0, prof_sync_us = 0;
 
     while (st.n_gen < n_predict && !has_eos) {
         if (abort && abort()) {
@@ -336,6 +340,7 @@ kvmem_spec_gen_stats kvmem_spec_generate(
         }
 
         gdn_replay_transaction transaction{ctx_tgt};
+        const auto prof_b0 = ggml_time_us();
         if (sess.use_gdn_replay) {
             transaction.active = llama_kvmem_gdn_replay_begin(batch_tgt.pos[0], batch_tgt.n_tokens);
             if (!transaction.active) {
@@ -344,19 +349,29 @@ kvmem_spec_gen_stats kvmem_spec_generate(
                 break;
             }
         }
+        prof_begin_us += ggml_time_us() - prof_b0;
         const auto verify_start = ggml_time_us();
+        const auto prof_t0 = ggml_time_us();
         const int rc = llama_decode(ctx_tgt, batch_tgt);
+        prof_tgt_us += ggml_time_us() - prof_t0;
         if (rc != 0) {
             fprintf(stderr, "llama_decode(spec verify) failed rc=%d n_draft=%zu\n",
                     rc, draft.size());
             st.failed = true;
             break;
         }
+        // DEV-PROF: pin the GPU-completion wait explicitly so the split shows
+        // where it really lands (decode enqueue vs logits copy vs sampler).
+        const auto prof_sync0 = ggml_time_us();
+        llama_synchronize(ctx_tgt);
+        prof_sync_us += ggml_time_us() - prof_sync0;
+        const auto prof_p0 = ggml_time_us();
         if (!common_speculative_process(spec, batch_tgt)) {
             fprintf(stderr, "common_speculative_process(verify) failed\n");
             st.failed = true;
             break;
         }
+        prof_proc_us += ggml_time_us() - prof_p0;
 
         const size_t n_draft = draft.size();
         const bool host_ckpt = sess.use_ckpt_tgt
@@ -366,7 +381,9 @@ kvmem_spec_gen_stats kvmem_spec_generate(
             smpl_save.reset(common_sampler_clone(smpl.get()));
         }
 
+        const auto prof_s0 = ggml_time_us();
         auto ids = common_sampler_sample_and_accept_n(smpl.get(), ctx_tgt, draft);
+        prof_smpl_us += ggml_time_us() - prof_s0;
         verify_us += ggml_time_us() - verify_start;
         ++verify_calls;
         ids.resize(std::min(ids.size(), (size_t) (n_predict - st.n_gen)));
@@ -483,6 +500,17 @@ kvmem_spec_gen_stats kvmem_spec_generate(
     fprintf(stderr, "KVMEM_GDN_PERF mode=%s verify_calls=%llu committed_rows=%llu verify_ms=%.3f fold_ms=%.3f\n",
             sess.use_gdn_replay ? "replay" : "snapshots", (unsigned long long) verify_calls,
             (unsigned long long) committed_rows, verify_us / 1000.0, fold_us / 1000.0);
+    if (prof && verify_calls > 0) {
+        fprintf(stderr,
+                "KVMEM_VERIFY_SPLIT calls=%llu begin_ms=%.3f decode_tgt_ms=%.3f sync_ms=%.3f process_ms=%.3f sample_ms=%.3f "
+                "per_step: begin=%.2f decode_tgt=%.2f sync=%.2f process=%.2f sample=%.2f (ms)\n",
+                (unsigned long long) verify_calls,
+                prof_begin_us / 1000.0, prof_tgt_us / 1000.0, prof_sync_us / 1000.0,
+                prof_proc_us / 1000.0, prof_smpl_us / 1000.0,
+                prof_begin_us / 1000.0 / verify_calls, prof_tgt_us / 1000.0 / verify_calls,
+                prof_sync_us / 1000.0 / verify_calls, prof_proc_us / 1000.0 / verify_calls,
+                prof_smpl_us / 1000.0 / verify_calls);
+    }
     llama_kvmem_decode_mean_flush();
     llama_kvmem_decode_mean_discard();
     common_speculative_print_stats(spec);

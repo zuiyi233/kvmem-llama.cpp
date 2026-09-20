@@ -1564,8 +1564,8 @@ int main(int argc, char ** argv) {
             cpu_moe_all = true;
         } else if (eq(arg, "-ncmoe") || eq(arg, "--n-cpu-moe")) {
             n_cpu_moe = std::atoi(need(arg));
-            if (n_cpu_moe < 0) {
-                fprintf(stderr, "invalid --n-cpu-moe (want >= 0)\n");
+            if (n_cpu_moe < 0 || n_cpu_moe > (int) llama_max_tensor_buft_overrides()) {
+                fprintf(stderr, "invalid --n-cpu-moe (want 0..%zu)\n", llama_max_tensor_buft_overrides());
                 return 1;
             }
         } else if (!kvmem_chat_sampling_cli_key(arg).empty()) {
@@ -1789,6 +1789,8 @@ int main(int argc, char ** argv) {
         llm_add_n_cpu_ffn_overrides(n_cpu_moe, LLM_FFN_EXPS_REGEX, buft_overrides);
     }
     if (!buft_overrides.empty()) {
+        // Loader iterates until pattern == nullptr; the list must be NULL-terminated.
+        buft_overrides.push_back({nullptr, nullptr});
         mparams.tensor_buft_overrides = buft_overrides.data();
     }
     st.model = llama_model_load_from_file(model_path.c_str(), mparams);

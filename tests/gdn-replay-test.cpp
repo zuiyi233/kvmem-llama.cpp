@@ -101,7 +101,8 @@ static void check_replay(ggml_backend_t backend, int tokens, int rounds, bool fo
     ggml_backend_tensor_set(b, betas.data(), 0, ggml_nbytes(b));
     const ggml_cuda_gdn_replay_layer layer{static_cast<float *>(s->data), static_cast<float *>(conv->data),
         static_cast<float *>(k->data), static_cast<float *>(v->data), static_cast<float *>(g->data),
-        static_cast<float *>(b->data), static_cast<float *>(conv_input->data)};
+        static_cast<float *>(b->data), static_cast<float *>(conv_input->data),
+        16, 48, 128, 10240};
     ggml_backend_tensor_set(descriptor, &layer, 0, sizeof(layer));
     const auto original_key = get(k);
     const auto columns = get(conv_input);

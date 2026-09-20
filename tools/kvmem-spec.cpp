@@ -20,6 +20,68 @@ struct gdn_replay_transaction {
     }
 };
 
+// Fast greedy path: when temperature <= 0 and every non-temperature sampler in
+// the chain is disabled (its upstream no-op conditions), the full sampling
+// chain reduces to a plain argmax per output position. Sampling the logits rows
+// directly -- one D2H of the whole outputs block instead of one per position
+// plus per-position construction of a full-vocab candidate array -- keeps the
+// output identical while removing the dominant CPU cost of the verify loop.
+static bool kvmem_spec_fast_greedy_ok(const common_params_sampling & sp) {
+    if (sp.temp > 0.0f) return false;
+    if (sp.top_k > 0) return false;
+    if (sp.top_p < 1.0f) return false;
+    if (sp.min_p > 0.0f) return false;
+    if (sp.penalty_repeat != 1.0f || sp.penalty_freq != 0.0f || sp.penalty_present != 0.0f) return false;
+    if (sp.dry_multiplier != 0.0f) return false;
+    if (sp.top_n_sigma >= 0.0f) return false;
+    if (sp.typ_p < 1.0f) return false;
+    if (sp.xtc_probability > 0.0f) return false;
+    if (!common_grammar_value(sp.grammar).empty()) return false;
+    if (sp.reasoning_budget_tokens >= 0) return false;
+    return true;
+}
+
+static std::vector<llama_token> kvmem_spec_sample_fast_greedy(
+        common_sampler * smpl, llama_context * ctx, const llama_vocab * vocab,
+        const llama_tokens & draft) {
+    llama_synchronize(ctx);
+    const float * logits = llama_get_logits(ctx);
+    const int n_vocab = llama_vocab_n_tokens(vocab);
+    std::vector<llama_token> result;
+    result.reserve(draft.size() + 1);
+    size_t i = 0;
+    for (; i < draft.size(); ++i) {
+        const float * row = logits + (int64_t) i * n_vocab;
+        llama_token best = 0;
+        float best_l = row[0];
+        for (int t = 1; t < n_vocab; ++t) {
+            if (row[t] > best_l) {
+                best_l = row[t];
+                best = t;
+            }
+        }
+        common_sampler_accept(smpl, best, true);
+        result.push_back(best);
+        if (draft[i] != best) {
+            break;
+        }
+    }
+    if (i == draft.size()) {
+        const float * row = logits + (int64_t) i * n_vocab;
+        llama_token best = 0;
+        float best_l = row[0];
+        for (int t = 1; t < n_vocab; ++t) {
+            if (row[t] > best_l) {
+                best_l = row[t];
+                best = t;
+            }
+        }
+        common_sampler_accept(smpl, best, true);
+        result.push_back(best);
+    }
+    return result;
+}
+
 ggml_type kvmem_parse_cache_type(const char * s, bool * ok) {
     if (ok) {
         *ok = true;
@@ -262,6 +324,13 @@ kvmem_spec_gen_stats kvmem_spec_generate(
         return st;
     }
 
+    // Whole-chain argmax shortcut (see kvmem_spec_fast_greedy_ok). Constant
+    // per generate loop: sparams never change while tokens are being produced.
+    const bool fast_greedy = kvmem_spec_fast_greedy_ok(sparams);
+    if (fast_greedy) {
+        fprintf(stderr, "KVMEM_TRACE fast_greedy=1 (argmax path; all samplers disabled)\n");
+    }
+
     llama_tokens prompt_tgt(prompt.begin(), prompt.end() - 1);
     prompt_tgt.reserve(llama_n_ctx(ctx_tgt));
     common_speculative_begin(spec, seq_id, prompt_tgt);
@@ -382,7 +451,12 @@ kvmem_spec_gen_stats kvmem_spec_generate(
         }
 
         const auto prof_s0 = ggml_time_us();
-        auto ids = common_sampler_sample_and_accept_n(smpl.get(), ctx_tgt, draft);
+        std::vector<llama_token> ids;
+        if (fast_greedy) {
+            ids = kvmem_spec_sample_fast_greedy(smpl.get(), ctx_tgt, vocab, draft);
+        } else {
+            ids = common_sampler_sample_and_accept_n(smpl.get(), ctx_tgt, draft);
+        }
         prof_smpl_us += ggml_time_us() - prof_s0;
         verify_us += ggml_time_us() - verify_start;
         ++verify_calls;

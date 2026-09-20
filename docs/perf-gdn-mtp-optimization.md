@@ -130,3 +130,22 @@ P1（n_max=4）→ ~95 t/s → P0（采样精简）→ ~115-125 t/s → P2（D2H
 ### P2 状态
 
 - 批量 logits D2H 已隐含在 fast-greedy 路径中（一次 get_logits 替代逐位置）。temp>0 场景的 cur 构造优化（15 万 token_data/位置）未实施，留待需要时。
+
+### P2 落地：批量 logits 采样变体（2026-09-21，提交 f5cab28 + baf662663）
+
+**实现**（`llama.cpp/common/sampling.{h,cpp}` + `tools/kvmem-spec.cpp`）：
+- `common_sampler_sample` 增加 `raw_override` 参数：外部已取全量 outputs logits 块时直接按行偏移填充 cur，跳过每位置的 `llama_get_logits_ith`。
+- 新增 `common_sampler_sample_and_accept_n_batched`：一次 `llama_synchronize` + 一次 `llama_get_logits`（整块 D2H），循环按 `logits_base + idxs[i]*n_vocab` 传行指针；采样/accept 语义与既有 `accept_n` 逐位一致。
+- kvmem-spec 非 fast-greedy 分支（temp>0 / thinking）改调 batched 变体，idxs=[0..draft.size()] 映射 verify batch 输出位置（id_last 后跟 draft[i]，全部标记 output）。
+- 审查加固（提交 791277265）：logits_base 空指针断言 + 行偏移契约文档化（batch 输出从位置 0 起连续且全为 output）。
+
+**实测（3090，Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp，KVMEM_PROFILE，thinking temp=0.8，n_max=3，同模型同配置 A/B）**：
+
+| 路径 | median t/s | sample/步 | decode_tgt/步 |
+|---|---|---|---|
+| 原 accept_n（stash 旧路径重建） | 61.37 | 2.05ms | 37.2ms |
+| **accept_n_batched** | **64.32** | 2.33ms | 36.6ms |
+
+- batched +4.8% t/s；`seed=42` 逐字符一致（确定性等价验证通过）。
+- **重要发现：thinking 模式下 sample 已不是瓶颈**（penalty=0 链后 2.0-2.3ms/步，占 5%），关键路径是 decode_tgt 36.6ms/步（GPU 4-token batch MoE 执行，占 92%）。本机当日实测与文档基线（decode_tgt 8.5+sync 10.7=19.2ms）有 ~2 倍差，来源未完全定位（GPU 频率/负载波动 ±10% 不足以解释，可能为文档基线二进制的 GDN replay 或 MTP 路径差异）。
+- 结论：thinking 模式的进一步提速重心已从采样链转向 GPU 执行（MoE decode 效率 / MTP accept 率），采样侧剩余空间仅 +5% 级。

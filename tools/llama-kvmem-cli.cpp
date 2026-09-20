@@ -1,4 +1,5 @@
 #include "llama.h"
+#include "common.h"
 #include "llama-kvmem-hooks.h"
 #include "kvmem-spec.h"
 
@@ -24,6 +25,8 @@ static void print_usage(const char * argv0) {
             "  -b, --batch-size N         logical batch (default 512)\n"
             "  -ub, --ubatch-size N       physical ubatch (default 512)\n"
             "  -ngl, --n-gpu-layers N     GPU layers (default 99)\n"
+            "  -cmoe, --cpu-moe           keep all MoE expert weights in system RAM\n"
+            "  -ncmoe, --n-cpu-moe N      keep the first N layers' MoE expert weights in RAM\n"
             "  --temp T                   temperature; 0 = greedy (default 0)\n"
             "  --tokens-only              print generated token ids, one per line\n"
             "  --no-prompt                do not echo the prompt (generation only)\n"
@@ -71,6 +74,8 @@ int main(int argc, char ** argv) {
     int n_batch = 512;
     int n_ubatch = 512;
     int ngl = 99;
+    int n_cpu_moe = 0;        // -ncmoe: first N layers' MoE expert weights to CPU RAM
+    bool cpu_moe_all = false; // -cmoe: all MoE expert weights to CPU RAM
     float temp = 0.0f;
     bool tokens_only = false;
     bool no_prompt = false;
@@ -122,6 +127,10 @@ int main(int argc, char ** argv) {
             n_ubatch = std::atoi(need(arg));
         } else if (eq(arg, "-ngl") || eq(arg, "--n-gpu-layers")) {
             ngl = std::atoi(need(arg));
+        } else if (eq(arg, "-cmoe") || eq(arg, "--cpu-moe")) {
+            cpu_moe_all = true;
+        } else if (eq(arg, "-ncmoe") || eq(arg, "--n-cpu-moe")) {
+            n_cpu_moe = std::atoi(need(arg));
         } else if (eq(arg, "--temp")) {
             temp = std::atof(need(arg));
         } else if (eq(arg, "--tokens-only")) {
@@ -257,6 +266,18 @@ int main(int argc, char ** argv) {
     llama_model_params model_params = llama_model_default_params();
     model_params.n_gpu_layers = ngl;
     model_params.load_mtp = spec_mtp;
+    // Standalone parser (no common_params_parse): wire the MoE expert CPU
+    // offload overrides explicitly before loading the model.
+    std::vector<llama_model_tensor_buft_override> buft_overrides;
+    if (cpu_moe_all) {
+        buft_overrides.push_back(llm_ffn_exps_cpu_override());
+    }
+    if (n_cpu_moe > 0) {
+        llm_add_n_cpu_ffn_overrides(n_cpu_moe, LLM_FFN_EXPS_REGEX, buft_overrides);
+    }
+    if (!buft_overrides.empty()) {
+        model_params.tensor_buft_overrides = buft_overrides.data();
+    }
     llama_model * model = llama_model_load_from_file(model_path.c_str(), model_params);
     if (!model) {
         fprintf(stderr, "failed to load model: %s\n", model_path.c_str());

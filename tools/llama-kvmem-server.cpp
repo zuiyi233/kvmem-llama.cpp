@@ -55,6 +55,8 @@ static void print_usage(const char * argv0) {
             "  -n, --n-predict N          default max_tokens (default 128)\n"
             "  -b, --batch-size N         logical batch (default 512)\n"
             "  -ngl, --n-gpu-layers N     GPU layers (default 99)\n"
+            "  -cmoe, --cpu-moe           keep all MoE expert weights in system RAM\n"
+            "  -ncmoe, --n-cpu-moe N      keep the first N layers' MoE expert weights in RAM\n"
             "  Sampling defaults: Qwen3.8-27B Thinking / non-Thinking, selected per request.\n"
             "  --temp, --temperature T    temperature [0,2] (1.0 / 0.7); 0 = greedy\n"
             "  --top-p P                  nucleus threshold [0,1] (0.95 / 0.80)\n"
@@ -1498,6 +1500,8 @@ int main(int argc, char ** argv) {
     int port = 8080;
     int n_ctx = 2048;
     int ngl = 99;
+    int n_cpu_moe = 0;        // -ncmoe: first N layers' MoE expert weights to CPU RAM
+    bool cpu_moe_all = false; // -cmoe: all MoE expert weights to CPU RAM
     ServerState st;
     st.kparams.mtp_state = 2; // ReplaySSM by default when MTP is enabled.
     st.kparams.block_tokens = 128;
@@ -1556,6 +1560,14 @@ int main(int argc, char ** argv) {
             st.n_batch = std::atoi(need(arg));
         } else if (eq(arg, "-ngl") || eq(arg, "--n-gpu-layers")) {
             ngl = std::atoi(need(arg));
+        } else if (eq(arg, "-cmoe") || eq(arg, "--cpu-moe")) {
+            cpu_moe_all = true;
+        } else if (eq(arg, "-ncmoe") || eq(arg, "--n-cpu-moe")) {
+            n_cpu_moe = std::atoi(need(arg));
+            if (n_cpu_moe < 0) {
+                fprintf(stderr, "invalid --n-cpu-moe (want >= 0)\n");
+                return 1;
+            }
         } else if (!kvmem_chat_sampling_cli_key(arg).empty()) {
             const auto key = kvmem_chat_sampling_cli_key(arg);
             const char * value = need(arg);
@@ -1767,6 +1779,18 @@ int main(int argc, char ** argv) {
     llama_model_params mparams = llama_model_default_params();
     mparams.n_gpu_layers = ngl;
     mparams.load_mtp = st.spec_mtp;
+    // This server parses args standalone (no common_params_parse), so wire the
+    // MoE expert CPU offload overrides explicitly before loading the model.
+    std::vector<llama_model_tensor_buft_override> buft_overrides;
+    if (cpu_moe_all) {
+        buft_overrides.push_back(llm_ffn_exps_cpu_override());
+    }
+    if (n_cpu_moe > 0) {
+        llm_add_n_cpu_ffn_overrides(n_cpu_moe, LLM_FFN_EXPS_REGEX, buft_overrides);
+    }
+    if (!buft_overrides.empty()) {
+        mparams.tensor_buft_overrides = buft_overrides.data();
+    }
     st.model = llama_model_load_from_file(model_path.c_str(), mparams);
     if (!st.model) {
         fprintf(stderr, "failed to load model\n");

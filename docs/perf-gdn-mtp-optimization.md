@@ -100,4 +100,33 @@ P1（n_max=4）→ ~95 t/s → P0（采样精简）→ ~115-125 t/s → P2（D2H
 
 ## 8. 实施记录
 
-（后续实施后追加：改动、实测结果、提交 hash）
+### P0 落地：fast-greedy 采样路径（2026-09-21，提交 1699f74）
+
+**实现**（`tools/kvmem-spec.cpp`）：
+- `kvmem_spec_fast_greedy_ok(sparams)`：当 `temp<=0` 且链上所有非温度采样器均处禁用态（top_k<=0、top_p>=1、min_p<=0、penalty 全 0、dry 0、top_n_sigma<0、typ_p>=1、xtc 0、无 grammar、无 reasoning budget）时启用。
+- `kvmem_spec_sample_fast_greedy`：一次 `llama_synchronize` + 一次 `llama_get_logits`（全量 outputs 块，一次 D2H），每位置直接对 logits 行 argmax，`common_sampler_accept` 保持采样器状态一致。
+- 语义等价性：temp<=0 的 llama.cpp 温度采样器本身就是 argmax（llama-sampler.cpp:270-285），链上其余采样器在禁用态均为 no-op（penalties is_disabled / top_k<=0 empty 等），因此输出与完整链逐 token 一致。
+- 原 `common_sampler_sample_and_accept_n` 路径保留（temp>0 / grammar / penalty 场景不受影响）。
+
+**实测（3090，Qwen3.8-35B-A3B Q4_K_M，KVMEM_PROFILE）**：
+
+| 配置 | t/s | sample/步 |
+|---|---|---|
+| 原链 n_max=3（优化前） | 88.6 | 16.50ms |
+| `--presence-penalty 0` n_max=3 | 96.4 | 10.96ms |
+| **fast-greedy n_max=3** | **144.3** | **1.40ms** |
+| **fast-greedy n_max=4（4k）** | **155.0** | 1.70ms |
+| **fast-greedy n_max=4（128k）** | **155.4** | 1.72ms |
+
+- sample 每步 -92%（16.5→1.4ms）；总速超 125 目标 24%。
+- 128k 长上下文与 4k 零差距（kvmem 内存化 KV 卖点与 fast-greedy 速度同时兑现）。
+- **T10 顺带验证**（ncmoe 20 + fast-greedy + n_max=4）：25.9 → **37.3 t/s（+44%）**，fast_greedy 触发确认；T10 新瓶颈转为 CPU 专家计算与 GPU 执行。
+- 限制：fast-greedy 仅覆盖 greedy（temp<=0）+ 无 penalty 场景；thinking 模式（temp=1.0）与 penalty>0 场景仍走原链（sample ~16.5ms，速度 ~89-96 t/s）。
+
+### P1 n_max 调参
+
+- n_max=4 与 fast-greedy 组合实测 155 t/s（4k 与 128k 一致），accept 率满档（committed_rows/verify_calls ≈ 4-5）。桌面预设建议 n_max 3→4。
+
+### P2 状态
+
+- 批量 logits D2H 已隐含在 fast-greedy 路径中（一次 get_logits 替代逐位置）。temp>0 场景的 cur 构造优化（15 万 token_data/位置）未实施，留待需要时。

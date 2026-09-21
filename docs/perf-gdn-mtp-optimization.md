@@ -147,5 +147,17 @@ P1（n_max=4）→ ~95 t/s → P0（采样精简）→ ~115-125 t/s → P2（D2H
 | **accept_n_batched** | **64.32** | 2.33ms | 36.6ms |
 
 - batched +4.8% t/s；`seed=42` 逐字符一致（确定性等价验证通过）。
-- **重要发现：thinking 模式下 sample 已不是瓶颈**（penalty=0 链后 2.0-2.3ms/步，占 5%），关键路径是 decode_tgt 36.6ms/步（GPU 4-token batch MoE 执行，占 92%）。本机当日实测与文档基线（decode_tgt 8.5+sync 10.7=19.2ms）有 ~2 倍差，来源未完全定位（GPU 频率/负载波动 ±10% 不足以解释，可能为文档基线二进制的 GDN replay 或 MTP 路径差异）。
+- **重要发现：thinking 模式下 sample 已不是瓶颈**（penalty=0 链后 2.0-2.3ms/步，占 5%），关键路径是 decode_tgt 36.6ms/步（GPU 4-token batch MoE 执行，占 92%）。本机当日实测与文档基线（decode_tgt 8.5+sync 10.7=19.2ms）有 ~2 倍差，来源未完全定位（疑文档基线二进制的 GDN replay 或 MTP 路径差异）。
 - 结论：thinking 模式的进一步提速重心已从采样链转向 GPU 执行（MoE decode 效率 / MTP accept 率），采样侧剩余空间仅 +5% 级。
+
+### P2 修正：2 倍差实为模型混用所致 + 35B MoE thinking 实测（2026-09-21）
+
+复核发现上述 A/B 用了 **Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp（27B dense）**，与文档基线的 **35B-A3B MoE** 不是同一模型，导致两处误导性结论，均已修正：
+
+1. **"decode_tgt 2 倍差来源未定位" → 实为模型差异**：dense 27B 每步 decode 激活全部 27B 参数（decode_tgt 36.6ms/步）；MoE 只激活 3B 专家（decode_tgt 7.0ms/步）。在 35B MoE 上复测同配置：
+   ```
+   per_step: begin=0.00  decode_tgt=7.04  sync=9.78  process=1.92  sample=1.93 (ms)  [共 ~20.7ms → 105.8 t/s]
+   ```
+   decode_tgt+sync=16.8ms/步 与文档基线（8.54+10.66=19.2ms）**同量级**，拆解自洽。
+2. **thinking 档（temp=0.8）在 35B MoE 上的 batched 实测为 105.76 t/s**（median，5 轮 97.97-110.73，n_max=3，accept 62-66%）——此前阶段 1 的 64.3 t/s 是 27B dense 的绝对速度，不代表 MoE 场景。文档基线（88.6/96.4）与 fast-greedy（144/155）全部是 **greedy（temp=0）** 档（文档 3.2 节 temperature=0 实况）；MoE thinking 档无历史基线可对比，105.76 为 batched 首测。
+3. **结论修正**：MoE 上 thinking 模式 batched 采样已接近 fast-greedy 档的 ~68%（105.8 vs 155），差距来自 temp>0 不能走 fast-greedy（sample 1.93ms vs 1.40ms/步）与 accept 率（62-66% vs ~100%）；解码侧 MoE 本身就是快路径（激活 3B），下一步提速重点是 **thinking 档 accept 率**（n_max 调参/草稿质量）而非采样链。27B dense 的 36.6ms/步 decode 是 dense 模型固有成本，与 kvmem/采样无关。

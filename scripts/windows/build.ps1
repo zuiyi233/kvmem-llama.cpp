@@ -4,6 +4,7 @@ param(
     [string]$SourceDir,
     [string]$BuildDir,
     [string]$CudaPath = $env:CUDA_PATH,
+    [switch]$ExperimentalCuda129,
     [string]$CudaArchitectures = '75-real;80-real;86-real;89-real;90-real;120a-real',
     [ValidateRange(1, 64)][int]$Jobs = 4,
     [switch]$HostOnly,
@@ -66,7 +67,9 @@ if ($HostOnly) {
     if ($LASTEXITCODE -ne 0 -or ($nvccVersion -join ' ') -notmatch 'V(\d+\.\d+\.\d+)') {
         throw 'Cannot determine nvcc version'
     }
-    if ([version]$Matches[1] -lt [version]'13.2.86') {
+    if ($ExperimentalCuda129) {
+        if ($Matches[1] -ne '12.9.86') { throw 'Experimental CUDA 12.9 build requires nvcc 12.9.86' }
+    } elseif ([version]$Matches[1] -lt [version]'13.2.86') {
         throw 'CUDA Toolkit 13.2 Update 2 (nvcc 13.2.86) or newer is required; rebuild in a new directory.'
     }
     $env:PATH = "$CudaPath\bin;$CudaPath\bin\x64;$env:PATH"
@@ -77,11 +80,12 @@ Invoke-Checked cmake $options
 $targets = @('kvmem_store_test', 'pinned_kv_tier_test', 'nvme_disabled_test', 'kvmem_runtime_test', 'raw_kv_store_test')
 if (!$HostOnly) {
     $targets += @('llama-kvmem-server', 'llama-kvmem-cli', 'llama-quantize',
-        'kvmem-chat-id-test', 'kvmem-reasoning-budget-test', 'kvmem-chat-template-test')
+        'kvmem-chat-id-test', 'kvmem-reasoning-budget-test', 'kvmem-chat-template-test', 'kvmem-server-options-test',
+        'kvmem-server-progress-test', 'kvmem-output-limit-test')
 }
 Invoke-Checked cmake (@('--build', $BuildDir, '--parallel', "$Jobs", '--target') + $targets)
 if (!$BuildOnly) {
     Invoke-Checked ctest @('--test-dir', $BuildDir, '--output-on-failure', '-R',
-        '^(kvmem_store_test|pinned_kv_tier_test|nvme_disabled_test|kvmem_runtime_test|raw_kv_store_test|kvmem-chat-id-test|kvmem-reasoning-budget-test|kvmem-chat-template-test)$')
+        '^(kvmem_store_test|pinned_kv_tier_test|nvme_disabled_test|kvmem_runtime_test|raw_kv_store_test|kvmem-chat-id-test|kvmem-reasoning-budget-test|kvmem-chat-template-test|kvmem-server-options-test|kvmem-server-progress-test|kvmem-output-limit-test)$')
     Write-Host "Built and tested: $BuildDir"
 } else { Write-Host "Built only; runtime tests NOT run: $BuildDir" }

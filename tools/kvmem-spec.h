@@ -20,6 +20,9 @@ struct kvmem_spec_opts {
     int32_t n_ctx = 0;
     int32_t n_batch = 512;
     int32_t n_ubatch = 512;
+    int32_t n_threads = -1;
+    int32_t n_threads_batch = -1;
+    llama_flash_attn_type flash_attn = LLAMA_FLASH_ATTN_TYPE_AUTO;
     bool    kvmem_enabled = false;
     std::string draft_model; // optional sidecar GGUF; empty = welded nextn
     ggml_type type_k = GGML_TYPE_Q8_0;
@@ -30,7 +33,7 @@ struct kvmem_spec_opts {
 // Supported cache types: f16, f32, q8_0, q5_0, q4_0.
 // q5_0 requires GGML_CUDA_FA_ALL_QUANTS (enabled by this project's build).
 ggml_type kvmem_parse_cache_type(const char * s, bool * ok);
-// Quantized K/V must match in the supported configurations.
+// Quantized K/V may independently use q8_0, q5_0 or q4_0; no float/quantized mixing.
 bool kvmem_cache_types_ok(ggml_type type_k, ggml_type type_v);
 
 struct kvmem_spec_session {

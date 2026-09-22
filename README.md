@@ -1,5 +1,9 @@
 # KVMem + llama.cpp
 
+**Prebuilt downloads:** [Windows x64 CUDA 13 / 12 (rc3)](https://github.com/kvmem/kvmem-llama.cpp/releases/tag/v0.16.0-rc3) · [Linux / WSL2 x86_64 (rc1)](https://github.com/kvmem/kvmem-llama.cpp/releases/tag/v0.16.0-rc1)
+
+**QQ community / QQ 交流群：1040777853**
+
 ## Near-lossless Qwen3.8-27B at a full 256K workspace on 16 GiB VRAM
 
 llama.cpp inference with tiered KV memory for long-running agents.
@@ -18,9 +22,11 @@ KVMem retrieves relevant historical blocks into a bounded GPU window, limiting t
 
 **Performance on faster GPUs.** Our measurements use the RTX 5060 Ti, the entry-level 16 GB option in the desktop RTX 50 series. The 16 GB RTX 5070 Ti and RTX 5080 offer substantially more compute and roughly twice the memory bandwidth ([NVIDIA specifications](https://www.nvidia.com/en-us/geforce/graphics-cards/compare/)). We therefore expect substantially faster GPU prefill and decode on these cards. Actual gains depend on the workload, CPU and host-memory transfers; benchmarks on these GPUs are welcome.
 
-Current milestone: [`v0.16.0-rc2`](docs/milestones/v0.16.0-rc2.md) (pre-release).
+Current milestone: [`v0.16.0-rc3`](docs/milestones/v0.16.0-rc3.md) (pre-release).
 
 **Limitation:** one generation cannot exceed `--kvmem-gen-reserve` (16384 tokens on the IQ3 recipe, 12288 on IQ4), including thinking. Retrieval pins the GPU window; new tokens only use those reserved slots. We are working on fixing this. For agent use, add a line to the system prompt such as: *Keep each turn's output, including thinking, within 16384 tokens* (use 12288 on IQ4). That makes oversized single-turn replies much less likely.
+
+Version: **0.16.0-rc3**. See the [English / 中文 release notes](docs/releases/v0.16.0-rc3.md) for CUDA build choices and measured results.
 
 ## How KVMem works
 
@@ -34,8 +40,9 @@ Core flags (what the 16 GiB recipes still pass):
 |---|---|
 | `-c` | Logical workspace, including history stored off GPU. 256K is the tested default; larger is experimental. |
 | `--kvmem-budget` | How many historical tokens retrieval may keep on GPU. |
+| `--kvmem-sink-tokens N` | Server and CLI: always keep the prefix in the GPU working set. Default `0` keeps one block (not disabled). Positive values round down to whole blocks, with a minimum of one block. For example, with block size 128, `1024` keeps 1024 tokens and `129` keeps 128. These blocks count toward `--kvmem-budget`. |
 | `--kvmem-gen-reserve` | GPU slots reserved for new tokens so retrieval cannot fill the pool. **One generation cannot exceed this length** (including thinking). |
-| `--kv-dtype` | Sets the same cache type for **main** attention K and V (IQ3 q8_0, IQ4 q5_0). Quantized K/V must use the same type; mixed quantization is not supported. |
+| `--kv-dtype` | Sets the same cache type for **main** attention K and V (IQ3 q8_0, IQ4 q5_0). Use `-ctk q8_0 -ctv q4_0` for mixed precision. |
 | `--spec-type draft-mtp` | Enable multi-token prediction. |
 | `--mmproj` | Vision projector GGUF. Omit for text-only. |
 
@@ -59,8 +66,9 @@ The project builds on llama.cpp's CUDA backend, with the platform above used for
 
 | Platform | Download | Notes |
 |---|---|---|
-| Windows x64 | [v0.16.0-rc2](https://github.com/kvmem/kvmem-llama.cpp/releases/tag/v0.16.0-rc2) | Choose the **runtime** ZIP; CUDA 13.2.86; GPU targets 75/80/86/89/90/120a. Quantizer is a separate optional ZIP. |
-| Linux / WSL2 x86_64 | [v0.16.0-rc1](https://github.com/kvmem/kvmem-llama.cpp/releases/tag/v0.16.0-rc1) | Existing Linux CUDA package; it has not been rebuilt or relabeled as rc2. |
+| Windows x64 — CUDA 13.2.86 | [v0.16.0-rc3](https://github.com/kvmem/kvmem-llama.cpp/releases/tag/v0.16.0-rc3) | Recommended **runtime** ZIP; GPU targets 75/80/86/89/90/120a. Quantizer is a separate optional ZIP. |
+| Windows x64 — CUDA 12.9.86 | [v0.16.0-rc3](https://github.com/kvmem/kvmem-llama.cpp/releases/tag/v0.16.0-rc3) | Alternative **runtime** ZIP; GPU targets 70/75/80/86/89/90/120a, including Volta. Quantizer is a separate optional ZIP. |
+| Linux / WSL2 x86_64 | [v0.16.0-rc1](https://github.com/kvmem/kvmem-llama.cpp/releases/tag/v0.16.0-rc1) | Existing Linux CUDA package; no rc3 Linux/WSL rebuild is included. |
 
 No model weights are bundled. For a Windows text-only setup, download the
 ready-made IQ3 `-mtp` model linked in the [Windows quick start](scripts/windows/README.md).
@@ -85,7 +93,7 @@ An experimental [native Windows build](scripts/windows/README.md) is being valid
 ```bash
 git clone --recurse-submodules https://github.com/kvmem/kvmem-llama.cpp.git
 cd kvmem-llama.cpp
-git checkout v0.16.0-rc2
+git checkout v0.16.0-rc3
 git submodule update --init
 scripts/apply-patches.sh
 scripts/build-cuda.sh
@@ -99,6 +107,8 @@ The build script defaults to `CMAKE_CUDA_ARCHITECTURES=120a-real` for the tested
 
 ## Browser chat
 
+The updated Windows rc3 runtime packages include both UIs: **full UI by default** at `share/kvmem/ui`, plus the lightweight UI at `share/kvmem/ui-lightweight`. Their independent `start-iq3.ps1` / `start-iq4.ps1` scripts accept only `-Model`, `-Mmproj` and optional `-Gpu` (default `0`, index or UUID). They directly invoke the server and no longer use shared launch helpers. To choose the lightweight UI, edit `$UiDir` in the script to end in `share\kvmem\ui-lightweight`; to disable UI, replace `--webui` with `--no-ui`. Edit `$Port = 18200` to change the port. Download the runtime ZIP again for these updated scripts. Full UI does not add server-side tool execution or stream resumption to the KVMem backend. See the [Windows runtime guide](scripts/windows/README.md) for a complete launch command.
+
 The optional lightweight UI reuses llama.cpp's Markdown/code renderer, input components and browser-local history. It supports text and images, separate thinking effort/budget controls, stopping generation, and server-measured decode speed. It does not execute tools or manage model loading.
 
 Build the static page once with Node.js 22 and npm:
@@ -107,9 +117,144 @@ Build the static page once with Node.js 22 and npm:
 python3 scripts/build-webui.py
 ```
 
+Add `--full-ui` to build the full upstream UI, including its generated icons and PWA assets. Use separate `--output` directories when keeping both builds.
+
 Then start the rebuilt server with the usual IQ3/IQ4 script and open `http://127.0.0.1:18200/`. The server automatically serves `build/share/kvmem/ui/` when present. Precompiled packages can include the page, so users do not need Node.js. `--ui-dir PATH` selects another static directory; `--no-ui` disables the page.
 
 Chat histories stay in this browser. Switching histories can require recomputing an uncached prompt; normal continuation reuses the existing KV cache. Closing or reloading the page interrupts generation; stream resumption is not included.
+
+## llama-server CLI compatibility
+
+The rc3 version of `llama-kvmem-server` accepts the common flags below with
+their llama.cpp meanings. Use the rc3 binaries or rebuild from source; rc2
+binaries predate these additions. This is an independent, single-slot server, so it does not
+yet accept every `llama-server` option.
+
+| Options | Meaning |
+| --- | --- |
+| `-t`, `--threads`; `-tb`, `--threads-batch` | CPU generation/batch threads; values <= 0 select hardware concurrency. An explicit `-t` also sets batch threads unless `-tb` is given. |
+| `-b`, `--batch-size`; `-ub`, `--ubatch-size` | Logical/physical batch sizes. Omitted `-ub` retains KVMem's existing default of the logical batch size. |
+| `-fa`, `--flash-attn on\|off\|auto` | Flash Attention mode; also applied to the MTP draft context. Backend/model restrictions still apply. |
+| `-ngl`, `--gpu-layers`, `--n-gpu-layers` | Nonnegative layer count or `all` (`-2`). Automatic GPU fitting (`auto`/`-1`) is not implemented and produces an error. |
+| `-a`, `--alias` | Model name returned by `/v1/models`, `/props` and chat responses. |
+| `--api-key`, `--api-key-file` | API authentication; details below. |
+| `-lm`, `--load-mode` | `auto`, `none`, `mmap`, `mlock`, `mmap+mlock`, `dio`; legacy `--mmap`, `--no-mmap`, `--mlock` map to the corresponding mode. Last loading-mode flag wins. |
+| `-np`, `--parallel` | Only `1` is supported. Automatic or multiple slots produce an error. |
+| `-to`, `--timeout` | HTTP read/write timeout in seconds; KVMem retains its 1800-second default. |
+| `--threads-http` | HTTP worker count; <= 0 selects automatically. This does not enable parallel inference slots. |
+| `-dev`, `--device`; `--list-devices` | Select one offload device (for example `CUDA0`), or `none` for CPU; list devices without loading a model. |
+| `-mg`, `--main-gpu`; `-sm`, `--split-mode` | Select a single GPU using `--split-mode none --main-gpu INDEX`. `layer` is accepted only when offloading to at most one device. |
+| `-ts`, `--tensor-split` | A single proportion is accepted; multi-device proportions are rejected. |
+
+Additional upstream aliases: `--usage` = `--help`, `--predict` = `--n-predict`,
+`-s` = `--seed`, `-mm` = `--mmproj`, `--no-webui` = `--no-ui`, and
+`--path` = `--ui-dir`.
+
+**Multi-GPU operation is not supported yet**, including with `--no-kvmem`.
+Multiple `--device` names, multiple `--tensor-split` entries, and `row`/`tensor`
+split modes fail before model loading. When automatic discovery sees multiple
+GPUs, select one with `--device CUDA0`, use `--split-mode none --main-gpu INDEX`,
+or expose one GPU through `CUDA_VISIBLE_DEVICES`. Indices refer to the visible
+device list (and to the selected device list when `--device` is supplied).
+
+Threads, physical batch size and Flash Attention settings propagate to MTP.
+Existing model, host/port, context, sampling, chat-template, vision and KV-cache
+flags remain available; run `--help` for the full supported list. `-n` / `--n-predict`
+now defaults to `-1`, matching llama-server: no additional output-token cap.
+Generation still stops at EOS/stop sequences and remains bounded by the available
+context and KVMem generation reserve; a request may set `max_tokens` explicitly.
+Other KVMem defaults
+and `--kvmem-*` controls remain unchanged. Numeric arguments reject malformed and
+out-of-range values. Context size must be positive; `--n-predict` accepts `-1`
+or a positive number.
+
+For example, append these options to an existing model/KVMem launch command:
+
+```sh
+--threads 8 --threads-batch 8 --batch-size 512 --ubatch-size 128 \
+--flash-attn on --gpu-layers all --parallel 1 --alias kvmem-27b \
+--api-key-file /path/to/api-keys.txt
+```
+
+`--api-key KEY1,KEY2` accepts comma-separated keys (CSV quoting is supported).
+`--api-key-file PATH` reads one key per line, ignoring blank lines and lines
+starting with `#`; Windows CRLF files are supported. Repeated key flags append
+allowed keys. Keys must contain printable ASCII without whitespace; empty lists,
+empty/unreadable key files and malformed quoting fail startup.
+
+Clients send `Authorization: Bearer YOUR_KEY` (or `X-Api-Key: YOUR_KEY`). With
+keys configured, API routes including `/props` and `/v1/models` require a matching
+key and return HTTP 401 otherwise. Health checks, CORS preflights and mounted UI
+assets remain public. Loading the UI does not grant access to authenticated APIs;
+clients must supply the key. Without key flags, authentication remains disabled.
+
+Regression checks: `kvmem-server-options-test` via CTest, and
+`python scripts/test_server_compat.py --server /path/to/llama-kvmem-server`.
+Add `--model PATH` for live auth/inference checks, `--mtp` for MTP, and
+`--mmproj PATH --image PATH` for the optional vision fixture containing `6037`.
+
+### Environment variables and startup diagnostics
+
+Supported environment variables use the names from this project's pinned
+llama.cpp version. Values pass through the same validation as CLI arguments.
+For ordinary settings, precedence is **CLI > environment > default**. Environment
+values are validated first, so an invalid environment value must be corrected
+even when a CLI override is present. API keys are additive: environment keys,
+environment key files, CLI keys and CLI key files all add allowed credentials.
+A CLI key does not revoke an environment key.
+
+| Environment variables | Corresponding settings |
+| --- | --- |
+| `LLAMA_ARG_MODEL`, `LLAMA_ARG_ALIAS` | Model path and API model name |
+| `LLAMA_ARG_HOST`, `LLAMA_ARG_PORT`, `LLAMA_ARG_TIMEOUT`, `LLAMA_ARG_THREADS_HTTP` | HTTP server |
+| `LLAMA_ARG_CTX_SIZE`, `LLAMA_ARG_N_PREDICT`, `LLAMA_ARG_BATCH`, `LLAMA_ARG_UBATCH`, `LLAMA_ARG_THREADS` | Context, output and CPU/batch configuration |
+| `LLAMA_ARG_DEVICE`, `LLAMA_ARG_N_GPU_LAYERS`, `LLAMA_ARG_MAIN_GPU`, `LLAMA_ARG_SPLIT_MODE`, `LLAMA_ARG_TENSOR_SPLIT` | GPU selection; the same single-GPU restrictions apply |
+| `LLAMA_ARG_FLASH_ATTN`, `LLAMA_ARG_CACHE_TYPE_K`, `LLAMA_ARG_CACHE_TYPE_V`, `LLAMA_ARG_N_PARALLEL` | Attention, KV types and single-slot configuration |
+| `LLAMA_ARG_LOAD_MODE`, `LLAMA_ARG_MMAP`, `LLAMA_ARG_MLOCK` | Model loading; legacy environment options apply before `LOAD_MODE` |
+| `LLAMA_ARG_MMPROJ`, `LLAMA_ARG_MMPROJ_OFFLOAD`, `LLAMA_ARG_IMAGE_MIN_TOKENS`, `LLAMA_ARG_IMAGE_MAX_TOKENS` | Vision |
+| `LLAMA_ARG_UI`, `LLAMA_ARG_STATIC_PATH` | UI enabled/disabled and static directory |
+| `LLAMA_API_KEY`, `LLAMA_ARG_API_KEY_FILE` | Authentication; no secret values are logged |
+| `LLAMA_ARG_JINJA`, `LLAMA_ARG_CHAT_TEMPLATE`, `LLAMA_ARG_CHAT_TEMPLATE_FILE`, `LLAMA_ARG_CHAT_TEMPLATE_KWARGS` | Templates; disabling Jinja is unsupported |
+| `LLAMA_ARG_REASONING_EFFORT`, `LLAMA_ARG_THINK_BUDGET`, `LLAMA_ARG_THINK_BUDGET_MESSAGE`, `LLAMA_ARG_TOP_K` | Reasoning and top-k sampling |
+| `LLAMA_ARG_SPEC_TYPE`, `LLAMA_ARG_SPEC_DRAFT_N_MAX`, `LLAMA_ARG_SPEC_DRAFT_P_MIN` | Existing MTP settings; independent draft models remain unsupported |
+
+Boolean environment values accept `1/0`, `true/false`, `on/off`, `yes/no`
+(case-insensitive). `--ui` / `--webui` can override `LLAMA_ARG_UI=false`.
+Unsupported `LLAMA_ARG_*` names produce a warning without printing their values.
+Unsupported API-key/TLS variable names fail startup rather than silently leaving
+authentication or native TLS unconfigured. Empty keys and empty/unreadable key
+files also fail startup. Unset both key variables and omit both key flags to
+disable authentication.
+
+PowerShell example (the values apply to the current shell and its child processes):
+
+```powershell
+$env:LLAMA_ARG_MODEL = 'C:\models\model.gguf'
+$env:LLAMA_ARG_DEVICE = 'CUDA0'
+$env:LLAMA_ARG_CTX_SIZE = '32768'
+$env:LLAMA_ARG_PORT = '18200'
+$env:LLAMA_ARG_API_KEY_FILE = 'C:\config\kvmem-api-keys.txt'
+.\llama-kvmem-server.exe --ctx-size 65536
+```
+
+Enable `--kvmem-trace` (or `KVMEM_TRACE=1`) to emit the structured startup records described below. Without tracing, normal startup messages and errors remain available.
+
+Startup first validates configuration, model/projector/UI files and incompatible
+settings before loading model weights. `KVMEM_STARTUP requested=...` records the
+requested configuration. After initialization and a successful port bind,
+`KVMEM_STARTUP ready=...` records actual context/batch/thread values, output limits,
+vision/MTP state, authentication status/key count and parameter sources. GPU and
+Flash Attention requests are labeled as requested; llama.cpp's backend logs show
+the actual placement and attention selection. Unlisted sources use defaults;
+inherited batch/thread settings are identified explicitly. No raw key values or
+key-file contents are included. Bind failures identify the address/port and do
+not print a successful listening message.
+
+Run `python scripts/test_server_environment.py --server PATH --output DIR`
+for environment validation; add `--model SMALL_GGUF` for live precedence,
+authentication, inference and startup-summary checks.
+
+The default bind address remains `127.0.0.1`. For LAN access, pass `--host 0.0.0.0 --port 18200`; clients use the host computer's LAN IP. Configure `--api-key` when authentication is needed and allow the port through the host firewall.
 
 ## Recommended settings (16 GiB)
 
@@ -134,7 +279,7 @@ MODEL=/path/Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf \
   MMPROJ=/path/mmproj-Qwen3.8-27B-Q5_K-MIX.gguf scripts/start-iq3.sh --dry-run
 ```
 
-GPU selection honors `CUDA_VISIBLE_DEVICES`; otherwise it chooses a 5060 Ti or the only GPU. Ambiguous multi-GPU setups require an explicit selection. `MODEL`, `MMPROJ`, `MMPROJ_DEVICE` and `PORT` can override recipe defaults. MTP3 and ReplaySSM are server defaults; override with `SPEC_DRAFT_N_MAX` and `KVMEM_MTP_STATE` if needed. CUDA libraries come from the build directory, caller environment or the toolkit recorded during compilation; use `CUDA_HOME` or `LD_LIBRARY_PATH` for a custom installation. An existing matching service is reused; switching configuration requires `--restart`, which only stops this project's server.
+GPU selection honors `CUDA_VISIBLE_DEVICES`; otherwise it chooses a 5060 Ti or the only GPU. Ambiguous multi-GPU setups require an explicit selection. `MODEL`, `MMPROJ`, `MMPROJ_DEVICE`, `HOST` and `PORT` can override recipe defaults. MTP3 and ReplaySSM are server defaults; override with `SPEC_DRAFT_N_MAX` and `KVMEM_MTP_STATE` if needed. CUDA libraries come from the build directory, caller environment or the toolkit recorded during compilation; use `CUDA_HOME` or `LD_LIBRARY_PATH` for a custom installation. An existing matching service is reused; switching configuration requires `--restart`, which only stops this project's server.
 
 ### llama.cpp-compatible KV cache flags
 
@@ -153,15 +298,33 @@ to each component wins. Setting only `-ctk` does not change V (both default to
 `q8_0`), so specify both when changing precision.
 
 Supported types are `f16`, `f32`, `q8_0`, `q5_0` and `q4_0`.
-**Currently, quantized K and V must use the same cache type. Mixed K/V
-quantization is not supported.** Valid quantized pairs are `q8_0/q8_0`,
-`q5_0/q5_0` and `q4_0/q4_0`. If either side is quantized, pairs such as
-`q8_0/q4_0` or `q8_0/f16` are rejected before loading the model, with an error
-showing the selected K and V types. Use `--kv-dtype TYPE` to set both together.
+K and V may independently select `q8_0`, `q5_0` or `q4_0`: all nine
+quantized pairs are accepted. Float/quantized pairs such as `q8_0/f16` remain
+rejected before model loading. Models that require shared K/V types still
+cannot use mixed precision; execution also depends on backend kernel support.
+
+GPU validation covers the common `q8_0/q8_0`, `q5_0/q5_0`, `q4_0/q4_0`
+pairs and mixed **`q8_0/q4_0`**. Q8/Q4 additionally passed cache save/restore,
+MTP replay and long-context checks on CUDA. The other five mixed quantized
+pairs are enabled with argument-parsing checks only; they have not received
+full inference, quality or performance validation. ROCm/Vulkan combinations
+have not been validated here.
+
+```text
+llama-kvmem-server -m model.gguf -ctk q8_0 -ctv q4_0
+```
+
+The Linux recipes accept `--cache-type-k q8_0 --cache-type-v q4_0`;
+in the updated Windows rc3 runtime scripts, edit `-ctk q8_0 -ctv q4_0`
+directly in the script. The older source launcher also accepts
+`-CacheTypeK q8_0 -CacheTypeV q4_0`. Existing recipe defaults are unchanged.
 
 Flag compatibility does not imply support for every llama.cpp cache type or
 mixed K/V combination. These flags affect the main model; MTP cache precision
-is configured separately with `--spec-kv-dtype`.
+is configured separately with `--spec-kv-dtype`. The server and recipes default
+to `f16`; the CLI inherits the main K/V types unless overridden. Inherited
+mixed K/V types are preserved independently; an explicit `--spec-kv-dtype`
+sets both draft types together.
 
 ### Thinking and chat templates
 
@@ -202,7 +365,7 @@ Pass the downloaded projector explicitly with `MMPROJ=/path/mmproj-Qwen3.8-27B-Q
 
 ```text
 -m Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf
---mmproj mmproj-Qwen3.8-27B-Q5_K-MIX.gguf --mmproj-offload --image-max-tokens 512
+--mmproj mmproj-Qwen3.8-27B-Q5_K-MIX.gguf --no-mmproj-offload --image-max-tokens 512
 -c 262144 -n 16384
 --kvmem-budget 36864 --kvmem-gen-reserve 16384
 --kv-dtype q8_0
@@ -210,7 +373,7 @@ Pass the downloaded projector explicitly with `MMPROJ=/path/mmproj-Qwen3.8-27B-Q
 --enable-thinking --reasoning-budget 4096
 ```
 
-If GPU vision does not fit, `MMPROJ_DEVICE=cpu`.
+IQ3 now defaults to CPU vision (`--no-mmproj-offload`) to leave more GPU memory for inference. Vision remains available. To explicitly use GPU vision, set `MMPROJ_DEVICE=gpu` on Linux/WSL; in the updated Windows rc3 runtime script, replace `--no-mmproj-offload` with `--mmproj-offload`. Historical performance tables below retain their original projector placement.
 
 ### IQ4 27B — optional experimental comparison
 
@@ -272,17 +435,53 @@ Initial computation measures the first processing of new input. Overall includes
 
 **Use IQ3 for the recommended setup.** IQ4 is retained only as an optional experimental comparison; the figures above are historical Linux/WSL2 measurements.
 
+### Server logging
+
+The server uses llama.cpp's timestamped logger. Normal output shows startup,
+prompt processing, generation progress and a final timing summary. Prompt rates
+exclude cached tokens; replay work remains included in elapsed prefill time.
+Warnings and errors remain visible without enabling KVMem diagnostics.
+
+- `-lv N`, `--verbosity N`, `--log-verbosity N`: `0` silent, `1` errors,
+  `2` warnings, `3` normal output (default), `4` llama.cpp trace, `5` debug.
+  Argument validation errors are always printed.
+- `--kvmem-trace` or `KVMEM_TRACE=1`: additionally emit the raw `KVMEM_*`
+  diagnostic records on stderr, preserving their benchmark/script format.
+  This switch is independent of `--verbosity`.
+- `--no-kvmem-trace`: override the environment and disable those diagnostics.
+  An unset, empty or `0` environment value also disables them.
+
+Scripts that parse KVMem records must explicitly set `KVMEM_TRACE=1`.
+The existing `KVMEM_PERF=1` performance counters remain independently available;
+they do not require full tracing. Tracing adds overhead, so compare benchmark
+results using the same diagnostic settings.
+For a detailed bug report, use `--verbosity 4 --kvmem-trace` and capture both
+stdout and stderr. This logging integration adapts the diagnostic gate and
+progress-reporting approach from [PR #9](https://github.com/kvmem/kvmem-llama.cpp/pull/9).
+
 ## APIs
 
 - `GET /health`
 - `GET /v1/models`
 - `POST /v1/chat/completions` (sampling, stream, tools, optional images)
 
-No auth or TLS. Bind `127.0.0.1`. Stream `usage` includes `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`.
+No auth or TLS unless an API key is set. Binds `127.0.0.1` by default. To serve
+on the LAN, pass `--host 0.0.0.0` to the server or to the launchers
+(`scripts/start-iq3.sh --host 0.0.0.0`; Windows: `start-iq3.ps1 -ListenHost 0.0.0.0`),
+or set `HOST` / `LLAMA_ARG_HOST` (e.g. `HOST=0.0.0.0 scripts/start-iq3.sh`). Open
+firewall ports for LAN clients. To require a key, pass `--api-key sk-xxx` to the
+server or Linux launchers (`start-iq3.sh --api-key sk-xxx`), or `-ApiKey 'sk-xxx'`
+/ `-ApiKeyFile path` on Windows (mirroring llama-server). Protected routes then
+need `Authorization: Bearer sk-xxx` (or `X-Api-Key: sk-xxx`); `/health`,
+`/v1/health`, OPTIONS requests and mounted UI static assets remain public.
+On Linux, relative `--api-key-file` paths are resolved from the caller's current
+directory and checked for readability before an existing service is stopped.
+Native TLS is not supported. Stream `usage` includes
+`prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`.
 
 ## Documentation
 
-- [v0.16.0-rc2 milestone](docs/milestones/v0.16.0-rc2.md)
+- [v0.16.0-rc3 milestone](docs/milestones/v0.16.0-rc3.md)
 - [Modification plan](docs/modification-plan.md)
 - [Architecture](docs/architecture.md)
 - [Patch replay](patches/README.md)

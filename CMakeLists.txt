@@ -273,7 +273,11 @@ if (KVMEM_BUILD_LLAMA)
         llama.cpp/tools/mtmd
         llama.cpp/vendor
         llama.cpp/vendor/cpp-httplib)
-    target_link_libraries(llama-kvmem-server PRIVATE llama llama-common cpp-httplib mtmd)
+    # kvmem must be linked directly here: libllama is a shared library and
+    # pulls static-archive members on demand, so kvmem symbols referenced only
+    # by this target (e.g. kvmem::session_memory_available) never land in
+    # libllama.so and the link fails with undefined references on GNU ld.
+    target_link_libraries(llama-kvmem-server PRIVATE llama llama-common cpp-httplib mtmd kvmem)
     target_compile_features(llama-kvmem-server PRIVATE cxx_std_17)
     # std::getenv is standard C++ and portable; MSVC marks it deprecated in
     # favour of the Windows-only _dupenv_s, and warns on the POSIX-ish helpers

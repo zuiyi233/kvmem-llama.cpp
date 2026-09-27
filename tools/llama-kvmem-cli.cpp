@@ -2,6 +2,7 @@
 #include "common.h"
 #include "llama-kvmem-hooks.h"
 #include "kvmem-spec.h"
+#include "kvmem-server-devices.h"
 
 #include <algorithm>
 #include <chrono>
@@ -24,7 +25,11 @@ static void print_usage(const char * argv0) {
             "  -c, --ctx-size N           context size (default prompt + n_predict)\n"
             "  -b, --batch-size N         logical batch (default 512)\n"
             "  -ub, --ubatch-size N       physical ubatch (default 512)\n"
-            "  -ngl, --n-gpu-layers N     GPU layers (default 99)\n"
+            "  -ngl, --n-gpu-layers N     GPU layers; all required for multi-GPU (default 99)\n"
+            "  --list-devices            list available ggml devices\n"
+            "  --device NAMES            CUDA devices, e.g. CUDA0,CUDA1\n"
+            "  --split-mode MODE         none | layer | tensor\n"
+            "  --tensor-split N,...      proportions, one per selected GPU\n"
             "  -cmoe, --cpu-moe           keep all MoE expert weights in system RAM\n"
             "  -ncmoe, --n-cpu-moe N      keep the first N layers' MoE expert weights in RAM\n"
             "  --temp T                   temperature; 0 = greedy (default 0)\n"
@@ -55,6 +60,7 @@ static void print_usage(const char * argv0) {
             "  --spec-kv-dtype TYPE       MTP K/V type (default: inherit target K/V types)\n"
             "  --spec-draft-n-max N       MTP draft tokens (default 2)\n"
             "  --spec-draft-p-min P       min draft probability (default 0)\n"
+            "  --kvmem-mtp-state MODE     snapshots | replay (default snapshots)\n"
             "  --spec-draft-model PATH    optional sidecar MTP GGUF\n",
             argv0);
 }
@@ -76,6 +82,9 @@ int main(int argc, char ** argv) {
     int ngl = 99;
     int n_cpu_moe = 0;        // -ncmoe: first N layers' MoE expert weights to CPU RAM
     bool cpu_moe_all = false; // -cmoe: all MoE expert weights to CPU RAM
+    bool list_devices = false;
+    kvmem_server_options device_options;
+    kvmem_server_devices device_config;
     float temp = 0.0f;
     bool tokens_only = false;
     bool no_prompt = false;
@@ -126,13 +135,26 @@ int main(int argc, char ** argv) {
         } else if (eq(arg, "-ub") || eq(arg, "--ubatch-size")) {
             n_ubatch = std::atoi(need(arg));
         } else if (eq(arg, "-ngl") || eq(arg, "--n-gpu-layers")) {
-            ngl = std::atoi(need(arg));
+            const char * value = need(arg);
+            ngl = eq(value, "all") ? -2 : std::atoi(value);
         } else if (eq(arg, "-cmoe") || eq(arg, "--cpu-moe")) {
             cpu_moe_all = true;
         } else if (eq(arg, "-ncmoe") || eq(arg, "--n-cpu-moe")) {
             n_cpu_moe = std::atoi(need(arg));
             if (n_cpu_moe < 0 || n_cpu_moe > (int) llama_max_tensor_buft_overrides()) {
                 fprintf(stderr, "invalid --n-cpu-moe (want 0..%zu)\n", llama_max_tensor_buft_overrides());
+                return 1;
+            }
+        } else if (eq(arg, "--list-devices")) {
+            list_devices = true;
+        } else if (eq(arg, "--device") || eq(arg, "-dev") ||
+                   eq(arg, "--split-mode") || eq(arg, "-sm") ||
+                   eq(arg, "--tensor-split") || eq(arg, "-ts") ||
+                   eq(arg, "--main-gpu") || eq(arg, "-mg")) {
+            try {
+                device_options.parse(arg, [&](const char *) { return need(arg); });
+            } catch (const std::exception & e) {
+                fprintf(stderr, "invalid GPU option: %s\n", e.what());
                 return 1;
             }
         } else if (eq(arg, "--temp")) {
@@ -223,6 +245,14 @@ int main(int argc, char ** argv) {
             spec_n_max = std::atoi(need(arg));
         } else if (eq(arg, "--spec-draft-p-min")) {
             spec_p_min = std::strtof(need(arg), nullptr);
+        } else if (eq(arg, "--kvmem-mtp-state")) {
+            const char * mode = need(arg);
+            if (eq(mode, "snapshots")) kparams.mtp_state = 0;
+            else if (eq(mode, "replay")) kparams.mtp_state = 2;
+            else {
+                fprintf(stderr, "unsupported --kvmem-mtp-state (want snapshots|replay)\n");
+                return 1;
+            }
         } else if (eq(arg, "--spec-draft-model") || eq(arg, "-md")) {
             spec_draft_model = need(arg);
         } else if (arg[0] == '-') {
@@ -245,6 +275,14 @@ int main(int argc, char ** argv) {
                 "set both -ctk and -ctv, or use --kv-dtype TYPE to set both\n",
                 ggml_type_name(cache_type_k), ggml_type_name(cache_type_v));
         return 1;
+    }
+    if (list_devices) {
+        ggml_backend_load_all();
+        for (size_t d = 0; d < ggml_backend_dev_count(); ++d) {
+            auto * dev = ggml_backend_dev_get(d);
+            fprintf(stdout, "%s: %s\n", ggml_backend_dev_name(dev), ggml_backend_dev_description(dev));
+        }
+        return 0;
     }
     if (model_path.empty()) {
         print_usage(argv[0]);
@@ -270,6 +308,25 @@ int main(int argc, char ** argv) {
     llama_model_params model_params = llama_model_default_params();
     model_params.n_gpu_layers = ngl;
     model_params.load_mtp = spec_mtp;
+    try {
+        device_config.apply(device_options, model_params);
+    } catch (const std::exception & e) {
+        fprintf(stderr, "invalid GPU configuration: %s\n", e.what());
+        return 1;
+    }
+    if (model_params.split_mode == LLAMA_SPLIT_MODE_TENSOR && spec_mtp && kparams.enabled && kparams.mtp_state != 0) {
+        fprintf(stderr, "tensor KVMem currently supports MTP snapshots only; use --kvmem-mtp-state snapshots\n");
+        return 1;
+    }
+    if (device_config.devices.size() > 2 && spec_mtp && !kparams.enabled &&
+        model_params.split_mode != LLAMA_SPLIT_MODE_TENSOR) {
+        fprintf(stderr, "multi-GPU MTP requires --kvmem\n");
+        return 1;
+    }
+    if (device_config.devices.size() > 2 && spec_mtp && !spec_draft_model.empty()) {
+        fprintf(stderr, "multi-GPU MTP currently requires an embedded nextn draft layer\n");
+        return 1;
+    }
     // Standalone parser (no common_params_parse): wire the MoE expert CPU
     // offload overrides explicitly before loading the model.
     std::vector<llama_model_tensor_buft_override> buft_overrides;
@@ -329,6 +386,7 @@ int main(int argc, char ** argv) {
     }
 
     if (kparams.enabled) {
+        if (!spec_mtp) kparams.mtp_state = 0;
         if (!nvme_dir.empty()) {
             kparams.nvme_dir = nvme_dir.c_str();
         }
@@ -630,6 +688,19 @@ int main(int argc, char ** argv) {
     }
 
     llama_synchronize(ctx);
+    const char * hash_gdn = std::getenv("KVMEM_GDN_HASH");
+    if (hash_gdn && hash_gdn[0] == '1' && llama_kvmem_has_recurrent()) {
+        const llama_state_seq_flags flags = LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY;
+        const size_t size = llama_state_seq_get_size_ext(ctx, 0, flags);
+        std::vector<uint8_t> state(size);
+        if (!size || llama_state_seq_get_data_ext(ctx, state.data(), size, 0, flags) != size) {
+            fprintf(stderr, "KVMEM_GDN_HASH failed to read recurrent state\n");
+            return 1;
+        }
+        uint64_t hash = 14695981039346656037ull;
+        for (uint8_t byte : state) hash = (hash ^ byte) * 1099511628211ull;
+        fprintf(stderr, "KVMEM_GDN_HASH bytes=%zu fnv64=%016llx\n", size, (unsigned long long) hash);
+    }
     const double gen_wall_ms = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - t_gen0).count();
     llama_perf_context_print(ctx);

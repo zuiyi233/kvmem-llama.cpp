@@ -35,7 +35,9 @@ static bool use_gdn_replay(const llama_model & model, const llama_cparams & cp) 
         // ggml/src/ggml-cuda/gated_delta_net.cu, which the HIP backend compiles
         // from the very same source, and GGML_CUDA_NAME is "ROCm" there.
         // ggml-cuda.cu registers the backend with exactly this string.
-        supported = dev && ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_GPU &&
+        // T10-class CUDA devices report backend type 2 (not GPU) with CUDA 13.x
+        // drivers; accept any non-CPU device whose registry is the CUDA backend.
+        supported = dev && ggml_backend_dev_type(dev) != GGML_BACKEND_DEVICE_TYPE_CPU &&
             std::strcmp(ggml_backend_reg_name(ggml_backend_dev_backend_reg(dev)), GGML_CUDA_NAME) == 0 &&
             (allow_multi_device || !device || device == dev);
         device = dev;

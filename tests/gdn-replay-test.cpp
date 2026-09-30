@@ -242,13 +242,14 @@ static void check_multilayer(ggml_backend_t backend) {
         ggml_backend_tensor_set(l.b, betas.data(), 0, ggml_nbytes(l.b));
         gpu_layers.push_back({static_cast<float *>(l.s->data), static_cast<float *>(l.conv->data),
                 static_cast<float *>(l.k->data), static_cast<float *>(l.v->data), static_cast<float *>(l.g->data),
-                static_cast<float *>(l.b->data), static_cast<float *>(l.input->data)});
+                static_cast<float *>(l.b->data), static_cast<float *>(l.input->data),
+                16, 48, 128, 10240});
         histories.push_back(get(l.conv));
     }
     ggml_backend_tensor_set(descriptors, gpu_layers.data(), 0, ggml_nbytes(descriptors));
     require(ggml_backend_graph_compute(backend, graph) == GGML_STATUS_SUCCESS, "multilayer reference failed");
     require(ggml_backend_cuda_gdn_fold(static_cast<const ggml_cuda_gdn_replay_layer *>(descriptors->data),
-                count, keep, tokens, nullptr), "multilayer fold failed");
+                count, keep, tokens, 48, 10240, nullptr), "multilayer fold failed");
     for (int il = 0; il < count; ++il) {
         const auto & l = layers[il];
         const auto reference = get(l.reference), actual = get(l.s), conv = get(l.conv), input = get(l.input);

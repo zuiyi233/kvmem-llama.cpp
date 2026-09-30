@@ -16,7 +16,7 @@ cmake -S %ROOT% -B %BUILD_DIR% -G Ninja ^
     -DCMAKE_CUDA_COMPILER="C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.3\bin\nvcc.exe" ^
     -DCMAKE_CUDA_ARCHITECTURES=75;86 ^
     -DGGML_CUDA=ON ^
-    -DGGML_CUDA_FA_ALL_QUANTS=ON ^
+    -DGGML_CUDA_FA_QUANTS=all ^
     -DKVMEM_BUILD_LLAMA=ON ^
     -DLLAMA_KVMEM=ON ^
     -DLLAMA_KVMEM_ROOT=%ROOT%

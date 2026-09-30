@@ -8,6 +8,12 @@ It also fixes reasoning-budget initialization from a template's generation prefi
 `scripts/apply-patches.sh` applies it
 without creating commits and checks for an already applied tree.
 
+`cuda-graph-decode.patch` applies after that cumulative diff. It keeps one
+decode graph per output width 1..8, restores scheduler `src` edges before the
+next split, and returns from empty `GET_ROWS`. Set
+`KVMEM_DECODE_GRAPH_SLOTS=0` to use the previous two-slot path. A tree with
+this patch applied no longer reverses `llama-kvmem-current.patch` alone.
+
 `0005-hip-rdna2-quantized-kv-fa-vec.patch` is @zintown's PR #58 RDNA2
 quantized-KV Flash Attention dispatch fix. It selects the existing VEC kernel
 for supported dimensions, avoiding the larger tile kernel's zero-occupancy

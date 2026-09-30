@@ -2558,6 +2558,32 @@ bool llama_memory_kvmem::capture_can_reuse(uint32_t n_tokens, uint32_t n_pos,
     return need_q == graph_has_q_;
 }
 
+uint64_t llama_memory_kvmem::capture_stamp() const {
+    uint64_t stamp = 1;
+    if (retrieval_pinned_) {
+        stamp |= 2;
+    }
+    if (want_decode_mean()) {
+        stamp |= 4;
+    }
+    if (want_q_capture()) {
+        stamp |= 8;
+    }
+    if (replay_) {
+        stamp |= 16;
+    }
+    if (graph_has_k_) {
+        stamp |= 32;
+    }
+    if (graph_has_q_) {
+        stamp |= 64;
+    }
+    if (graph_has_record_) {
+        stamp |= 128;
+    }
+    return stamp;
+}
+
 bool llama_memory_kvmem::d2h_init() {
     if (d2h_ && d2h_->ok) {
         return true;

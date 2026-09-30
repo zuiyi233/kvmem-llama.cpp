@@ -144,3 +144,7 @@ bool llama_kvmem_ubatch_needs_q_capture(uint32_t n_tokens, uint32_t n_pos, const
 bool llama_kvmem_capture_can_reuse(uint32_t n_tokens, uint32_t n_pos, const llama_pos * pos, int is_mtp) {
     return kvmem_capture_can_reuse(n_tokens, n_pos, pos, is_mtp);
 }
+
+uint64_t llama_kvmem_capture_stamp(void) {
+    return g_mem ? g_mem->capture_stamp() : 0;
+}

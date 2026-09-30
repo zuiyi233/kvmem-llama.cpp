@@ -35,18 +35,27 @@ function Invoke-Checked([string]$Program, [string[]]$Arguments) {
 foreach ($tool in 'cmake', 'ninja', 'cl') { $null = Get-Command $tool -ErrorAction Stop }
 
 if (!$HostOnly) {
-    # Use the maintained patch, never the developer's unrecorded submodule edits.
+    # Use the maintained patches, never the developer's unrecorded submodule edits.
     $llama = Join-Path $SourceDir 'llama.cpp'
     $patch = Join-Path $SourceDir 'patches/llama-kvmem-current.patch'
-    $savedPreference = $ErrorActionPreference
-    try {
-        $ErrorActionPreference = 'Continue'
-        & git -C $llama apply --reverse --check $patch 2>$null
-        $applied = $LASTEXITCODE -eq 0
-    } finally { $ErrorActionPreference = $savedPreference }
-    if (!$applied) {
-        Invoke-Checked git @('-C', $llama, 'apply', '--check', $patch)
-        Invoke-Checked git @('-C', $llama, 'apply', $patch)
+    $graph = Join-Path $SourceDir 'patches/cuda-graph-decode.patch'
+    function Test-PatchApplied([string]$PatchPath) {
+        $savedPreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            & git -C $llama apply --reverse --check $PatchPath 2>$null
+            return $LASTEXITCODE -eq 0
+        } finally { $ErrorActionPreference = $savedPreference }
+    }
+    # The graph patch sits on the cumulative patch, so a tree with both applied
+    # no longer reverses the cumulative patch alone.
+    if (!(Test-PatchApplied $graph)) {
+        if (!(Test-PatchApplied $patch)) {
+            Invoke-Checked git @('-C', $llama, 'apply', '--check', $patch)
+            Invoke-Checked git @('-C', $llama, 'apply', $patch)
+        }
+        Invoke-Checked git @('-C', $llama, 'apply', '--check', $graph)
+        Invoke-Checked git @('-C', $llama, 'apply', $graph)
     }
 }
 $options = @('-S', $SourceDir, '-B', $BuildDir, '-G', 'Ninja',

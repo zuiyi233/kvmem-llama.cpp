@@ -98,6 +98,7 @@ public:
     void register_capture(struct ggml_tensor * t, int il, char which);
     void capture_on_new_graph();
     bool capture_can_reuse(uint32_t n_tokens, uint32_t n_pos, const llama_pos * pos) const;
+    uint64_t capture_stamp() const;
     void harvest_pending(struct ggml_backend_sched * sched);
     void harvest_flush();
     void harvest_perf_print_sum();

@@ -50,6 +50,7 @@ Core flags (what the 16 GiB recipes still pass):
 | `--kv-dtype` | Sets the same cache type for **main** attention K and V (IQ3 q8_0, IQ4 q5_0). Use `-ctk q8_0 -ctv q4_0` for mixed precision. |
 | `--spec-type draft-mtp` | Enable multi-token prediction. |
 | `--mmproj` | Vision projector GGUF. Omit for text-only. |
+| `--video-fps F` | Video sampling rate, default `2.0` FPS. A finite value `<=0` uses the video's native frame rate. See [Video input](#video-input). |
 
 KVMem retrieval is on by default, with 128-token blocks, query replay `auto`, query policy `user`, MTP draft length 3, F16 draft KV, and ReplaySSM. You do not need to pass those unless you are overriding them. GPU KV size is `budget + gen_reserve`. When history exceeds `--kvmem-budget`, retrieval picks blocks for the current last-user query. Clients should send the full `messages` history each turn.
 
@@ -492,7 +493,7 @@ progress-reporting approach from [PR #9](https://github.com/kvmem/kvmem-llama.cp
 
 - `GET /health`
 - `GET /v1/models`
-- `POST /v1/chat/completions` (sampling, stream, tools, optional images)
+- `POST /v1/chat/completions` (sampling, stream, tools, optional images and videos)
 - `POST /v1/responses` and `POST /responses` (OpenAI Responses, non-streaming and SSE streaming). With `--mmproj`, `input_image.image_url` accepts image URLs or Base64 data URLs through the same vision pipeline as Chat Completions. File IDs are not supported. The per-request `detail` value is ignored; image resolution is controlled by the server's image token settings. `scripts/test_responses_sdk.py` exercises both paths through the official OpenAI Python SDK, whose Responses stream parser is stricter than a hand-rolled client.
 
 No auth or TLS unless an API key is set. Binds `127.0.0.1` by default. To serve
@@ -508,6 +509,33 @@ On Linux, relative `--api-key-file` paths are resolved from the caller's current
 directory and checked for readability before an existing service is stopped.
 Native TLS is not supported. Stream `usage` includes
 `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`.
+
+### Video input
+
+Video input requires a matching vision projector (`--mmproj`), a server built
+with `MTMD_VIDEO=ON` and `LLAMA_SUBPROCESS=ON` (both default to `ON`), and
+**ffmpeg and ffprobe on the server's PATH**. Check `ffmpeg -version` and
+`ffprobe -version` in the environment that launches the server. On Windows,
+add the directory containing both executables to PATH and restart the server
+after changing it. This feature is available in current source builds;
+the older v0.16.0-rc3 binaries predate it.
+
+In Chat Completions, send a content item with `"type": "video_url"` and
+`"video_url": {"url": "data:video/mp4;base64,..."}` (or a video URL).
+`GET /props` reports `modalities.video` from the build and loaded projector;
+it does not check whether ffmpeg and ffprobe are installed.
+
+`--video-fps 2` samples at 2 FPS by default. Zero or a negative finite value
+uses the native frame rate, which can greatly increase prompt size; `NaN`
+and infinity are rejected. Longer clips, higher sampling rates and higher
+frame resolution generally need more prompt tokens. Use `--image-max-tokens`
+to limit frame resolution; the exact token count also depends on the model's
+video processing. Start with a low FPS and `--image-max-tokens 512`, as in
+the recommended recipes, then check `usage.prompt_tokens` before raising
+either setting. The full conversation and output must fit the logical
+context (`-c`). Media groups (which can include adjacent frames) must fit
+the GPU working set (`--kvmem-budget`) alongside the sink tokens;
+generation space is allocated separately with `--kvmem-gen-reserve`.
 
 ## Documentation
 

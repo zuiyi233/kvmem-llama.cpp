@@ -61,6 +61,10 @@ LLAMA_API bool llama_kvmem_ubatch_needs_q_capture(uint32_t n_tokens, uint32_t n_
 // MTP graphs do not capture Q; is_mtp=1 always allows reuse from KVMem's side.
 LLAMA_API bool llama_kvmem_capture_can_reuse(uint32_t n_tokens, uint32_t n_pos,
                                              const llama_pos * pos, int is_mtp);
+// Topology stamp of the target graph last built. 0 if KVMem is not bound.
+// Decode-width slots reuse a graph only when this still matches the stamp
+// saved at that width's build.
+LLAMA_API uint64_t llama_kvmem_capture_stamp(void);
 // True while prefill/query-span harvest is still allowed (retrieval, not pinned).
 // MTP verify is n>1 after pin; callers must not harvest those ubatches into raw-K.
 LLAMA_API bool llama_kvmem_want_prefill_capture(void);
